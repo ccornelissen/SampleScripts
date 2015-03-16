@@ -1,0 +1,263 @@
+Shader "Shaders/OptimizedEmitBumpedDiffuse"
+{
+	Properties
+	{
+		_Color ("Color Tint", Color) = (1.0,1.0,1.0,1.0) //Texture color tint
+		
+		_MainTex ("Diffuse Texture, Spec (A)", 2D) = "white" {} //Main texture
+		
+		_EmissiveMap ("Emissive Texture", 2D) = "black" {} //Emit map 
+		_EmissionStrength ("Emission Power", Range(0.0,2.0)) = 0.0 //Emit Strength
+		
+		_BumpMap ("Normal Texture", 2D) = "bump" {} //Normal map
+		_BumpDepth ("Bump Depth", Range(-2.0, 2.0)) = 1.0 //Normal map stregth
+		
+		_SpecColor ("SpecColor", Color) = (1.0,1.0,1.0,1.0) //Specular color
+		_Shininess ("Shininess", Float) = 10 //Specular size 
+		
+		_RimColor ("Rim Color", Color) = (1.0,1.0,1.0,1.0) //Rim lighting color
+		_RimPower ("Rim Power", Range(0.1,10.0)) = 3.0 //Rim light power
+	}
+	SubShader
+	{
+		Pass
+		{
+			Tags {"LightMode" = "ForwardBase"} //Forward/ first pass
+			
+			CGPROGRAM
+			//Setting up Cg functions
+			#pragma vertex vert
+			#pragma fragment frag
+			
+			
+			//Setting up variables
+			//user variables 
+			uniform sampler2D _MainTex;
+			uniform half4 _MainTex_ST;
+			uniform sampler2D _BumpMap;
+			uniform half4 _BumpMap_ST;
+			uniform sampler2D _EmissiveMap;
+			uniform half4 _EmissiveMap_ST;
+			
+			uniform fixed4 _Color;
+			uniform fixed4 _SpecColor;
+			uniform fixed4 _RimColor;
+			uniform half _Shininess;
+			uniform half _RimPower;
+			uniform fixed _BumpDepth;
+			uniform fixed _EmissionStrength;
+			
+			//Unity variables
+			uniform half4 _LightColor0;
+			
+			//Base input structs
+			struct vertexInput
+			{
+				half4 vertex : POSITION; //Setting up objects vertex
+				half3 normal : NORMAL; //Setting up object normals
+				half4 texcoord : TEXCOORD0; //Setting up object texture coordinates
+				half4 tangent : TANGENT; //Setting up object tangent
+			};
+			struct vertexOutput
+			{
+				half4 pos : SV_POSITION; //Position
+				half4 tex : TEXCOORD0; //Texture
+				half4 lightDirection : TEXCOORD1; //Light Direction
+				fixed3 viewDirection : TEXCOORD2; //View Direction 
+				fixed3 normalWorld : TEXCOORD3; //World based Normals
+				fixed3 tangentWorld : TEXCOORD4; //World based Tangents
+				fixed3 binormalWorld : TEXCOORD5; //World based BiNormals
+			};
+			
+			//Vertex function
+			vertexOutput vert(vertexInput v)
+			{
+				vertexOutput o;
+				
+				//Calculating world normals
+				o.normalWorld = normalize( mul( half4( v.normal, 0.0), _World2Object ).xyz );
+				//Calculating world tangents
+				o.tangentWorld = normalize( mul( _Object2World, v.tangent ).xyz );
+				//Calculating binormal world
+				o.binormalWorld = normalize( cross(o.normalWorld, o.tangentWorld) * v.tangent.w );
+				
+				//Calculating world position
+				half4 posWorld = mul(_Object2World, v.vertex);
+				
+				//Calculating vertex position
+				o.pos = mul( UNITY_MATRIX_MVP, v.vertex );
+				//calculating texture coords
+				o.tex = v.texcoord;
+				
+				//Calculating view direction
+				o.viewDirection = normalize( _WorldSpaceCameraPos.xyz - posWorld.xyz );
+				
+				//Distance from light source
+				half3 fragmentToLightSource = _WorldSpaceLightPos0.xyz - posWorld.xyz;
+				
+				//Light direction calculation
+				o.lightDirection = fixed4(
+					normalize( lerp(_WorldSpaceLightPos0, fragmentToLightSource, _WorldSpaceLightPos0.w) ),
+					lerp(1.0, 1/length(fragmentToLightSource), _WorldSpaceLightPos0.w)
+				);
+				
+				return o;
+			}
+			
+			//Fragment function
+			fixed4 frag(vertexOutput i) : COLOR
+			{
+				//Texture maps
+				fixed4 tex = tex2D(_MainTex, i.tex.xy * _MainTex_ST.xy + _MainTex_ST.zw); //Main texture 
+				fixed4 texN = tex2D(_BumpMap, i.tex.xy * _BumpMap_ST.xy + _BumpMap_ST.zw); //Normal texture 
+				fixed4 texE = tex2D(_EmissiveMap, i.tex.xy * _EmissiveMap_ST.xy + _EmissiveMap_ST.zw); //Emit Texture
+				
+				//Unpack normal function
+				fixed3 localCoords = float3(2.0 * texN.ag - float2(1.0, 1.0), _BumpDepth);
+				
+				//Normal transpose matrix
+				half3x3 local2WorldTranspose = half3x3(
+					i.tangentWorld,
+					i.binormalWorld,
+					i.normalWorld
+				);
+				
+				//Calculate normal direction 
+				fixed3 normalDirection = normalize( mul( localCoords, local2WorldTranspose) );
+				
+				//Normal and light direction dot product
+				fixed3 nDotL = saturate(dot(normalDirection, i.lightDirection.xyz ));
+				
+				//Diffuse lighting
+				fixed3 diffuseReflection = i.lightDirection.w * _LightColor0.xyz * saturate(dot(normalDirection, i.lightDirection.xyz));
+				//Specular lighting
+				fixed3 specularReflection = diffuseReflection * _SpecColor.xyz * pow(saturate(dot(reflect(-i.lightDirection.xyz, normalDirection), i.viewDirection)), _Shininess);
+				
+				//Finding the edge/rim of object
+				fixed rim = 1 - nDotL;
+				//Calculating rim lighting 
+				fixed3 rimLighting = nDotL * _RimColor.xyz * _LightColor0.xyz * pow(rim, _RimPower);
+				
+				//creating objects final lighting
+				fixed3 lightFinal = UNITY_LIGHTMODEL_AMBIENT.xyz + diffuseReflection + (specularReflection * tex.a) + rimLighting + (texE.xyz * _EmissionStrength);
+				
+				//Return to object Texture * Final lighting * Color
+				return fixed4(tex.xyz * lightFinal * _Color.xyz, 1.0);
+			}
+			ENDCG
+		}
+		
+		Pass
+		{
+			Tags {"LightMode" = "ForwardAdd"} //Secondary pass for additional light
+			Blend One One //Blending mode one to one		
+			CGPROGRAM
+			#pragma vertex vert
+			#pragma fragment frag
+			
+			//user variables 
+			uniform sampler2D _MainTex;
+			uniform half4 _MainTex_ST;
+			uniform sampler2D _BumpMap;
+			uniform half4 _BumpMap_ST;
+			uniform sampler2D _EmissiveMap;
+			uniform half4 _EmissiveMap_ST;
+			
+			uniform fixed4 _Color;
+			uniform fixed4 _SpecColor;
+			uniform fixed4 _RimColor;
+			uniform half _Shininess;
+			uniform half _RimPower;
+			uniform fixed _BumpDepth;
+			uniform fixed _EmissionStrength;
+			
+			//Unity variables
+			uniform half4 _LightColor0;
+			
+			//Base input structs
+			struct vertexInput
+			{
+				half4 vertex : POSITION;
+				half3 normal : NORMAL;
+				half4 texcoord : TEXCOORD0;
+				half4 tangent : TANGENT;
+			};
+			struct vertexOutput
+			{
+				half4 pos : SV_POSITION;
+				half4 tex : TEXCOORD0;
+				half4 lightDirection : TEXCOORD1;
+				fixed3 viewDirection : TEXCOORD2;
+				fixed3 normalWorld : TEXCOORD3;
+				fixed3 tangentWorld : TEXCOORD4;
+				fixed3 binormalWorld : TEXCOORD5;
+			};
+			
+			//Vertex function
+			vertexOutput vert(vertexInput v)
+			{
+				vertexOutput o;
+
+				o.normalWorld = normalize( mul( half4( v.normal, 0.0), _World2Object ).xyz );
+				o.tangentWorld = normalize( mul( _Object2World, v.tangent ).xyz );
+				o.binormalWorld = normalize( cross(o.normalWorld, o.tangentWorld) * v.tangent.w );
+				
+								
+				half4 posWorld = mul(_Object2World, v.vertex);
+				
+				o.pos = mul( UNITY_MATRIX_MVP, v.vertex );
+				o.tex = v.texcoord;
+				
+				o.viewDirection = normalize( _WorldSpaceCameraPos.xyz - posWorld.xyz );
+				
+				half3 fragmentToLightSource = _WorldSpaceLightPos0.xyz - posWorld.xyz;
+				
+				o.lightDirection = fixed4(
+					normalize( lerp(_WorldSpaceLightPos0, fragmentToLightSource, _WorldSpaceLightPos0.w) ),
+					lerp(1.0, 1/length(fragmentToLightSource), _WorldSpaceLightPos0.w)
+				);
+				
+				return o;
+			}
+			
+			//Fragment function
+			
+			fixed4 frag(vertexOutput i) : COLOR
+			{
+				//Texture maps
+				fixed4 tex = tex2D(_MainTex, i.tex.xy * _MainTex_ST.xy + _MainTex_ST.zw);
+				fixed4 texN = tex2D(_BumpMap, i.tex.xy * _BumpMap_ST.xy + _BumpMap_ST.zw);
+				
+				//Unpack normal function
+				fixed3 localCoords = float3(2.0 * texN.ag - float2(1.0, 1.0), _BumpDepth);
+				
+				//Normal transpose matrix
+				half3x3 local2WorldTranspose = half3x3(
+					i.tangentWorld,
+					i.binormalWorld,
+					i.normalWorld
+				);
+				
+				//Calculate normal direction 
+				fixed3 normalDirection = normalize( mul( localCoords, local2WorldTranspose) );
+				
+				fixed3 nDotL = saturate(dot(normalDirection, i.lightDirection.xyz ));
+				
+				//lighting
+				fixed3 diffuseReflection = i.lightDirection.w * _LightColor0.xyz * saturate(dot(normalDirection, i.lightDirection.xyz));
+				fixed3 specularReflection = diffuseReflection * _SpecColor.xyz * pow(saturate(dot(reflect(-i.lightDirection.xyz, normalDirection), i.viewDirection)), _Shininess);
+				
+				//Rim Light
+				fixed rim = 1 - nDotL;
+				fixed3 rimLighting = nDotL * _RimColor.xyz * _LightColor0.xyz * pow(rim, _RimPower);
+				
+				fixed3 lightFinal = diffuseReflection + (specularReflection * tex.a) + rimLighting;
+				
+				//Removing unnecessary maps 
+				return fixed4(lightFinal * _Color.xyz, 1.0);
+			}
+			ENDCG
+		}
+	}
+	Fallback "Specular"
+}

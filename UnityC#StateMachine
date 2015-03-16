@@ -1,0 +1,526 @@
+using UnityEngine;
+using System.Collections;
+
+//The name "StateMachine" is place holder for demonstration purposes.
+public class StateMachine : MonoBehaviour
+{
+	/////State Machine/////////
+
+	//Setting up the state machine
+	public PlayerStates PSCurrentState;
+
+
+	//Creating the various states
+	public enum PlayerStates
+	{
+		PSGrounded, //Standard state for when player is on the ground
+		PSJumping, //State for when the player is in the air after the jump function
+		PSClimbing, //State for when the player is climbing ladder or rope
+		PSDismounting, //State for when the player is dismounting a climbable object
+		PSCarrying, //State for when the player is carrying the other player
+		PSCarried, //State for when the player is being carried
+		PSLedge, //State for when the player is hanging on the ledge of an object
+		PSTeleporting, //State for when the player is casting teleport
+		PSThrown, //State for when the player has been thrown by another player
+		PSCaught,  //State for when player has been caught by an enemy
+		PSTreaureCarry, //State for when the player is carrying treasure
+		PSDropping, //State for when the player is dropping off ledge or climbable object.
+		PSMax //Max state, if additional states were needed they would be added above this state.
+	}
+
+	//The state machine
+	public void StateSet (PlayerStates currentState)
+	{
+		switch(currentState) //State switch
+		{
+			#region Grounded
+		case PlayerStates.PSGrounded: //Grounded state
+			
+			if (Input.GetKey(keyJump)) //Allowing the player to jump
+			{ 
+				Jump (); //Player jump function
+			}
+			
+			GroundCheck(); //Function to check if player is on the ground
+			
+			PlayerSprint(); //Function that allows player to sprint in this state
+	
+			POStateSet(POControl); //Player control state machine, this changes depending on control scheme. Allows player movement.
+			
+			CamControl(); //Function allowing player to control the camera in this state
+			
+			Gravity(); //Function applying gravity to the player in this state.
+			
+			//Player uses the interact option
+			if (Input.GetKeyDown (keyInteract)) 
+			{
+				Interact (); //Function that allows player to interact with objects, pick up, throw, ext
+			}
+			
+			if(Input.GetKeyDown (keyTeleport)) //Allowing player to teleport
+			{
+				fTeleportTime = 5.0f; //setting the timer
+				Instantiate(go_TelePart, transform.position, transform.rotation); //Creating teleport particles
+				PSCurrentState = PlayerStates.PSTeleporting; //switching the players current state
+			}
+			
+			return;
+			#endregion
+			
+			#region Jumping
+		case PlayerStates.PSJumping: //Player is in the air
+			
+			CamControl();
+			
+			GroundCheck();
+			
+			PlayerAirControl(fAirSpeed); //Function allowing the player to have limited control in the air, based on float "fAirSpeed"
+			
+			RaycastHit hit;
+			
+			if(Physics.Raycast(transform.position, transform.forward, out hit, 1.5f)) //Raycast checking for ledges
+			{
+				
+				if(hit.transform.tag == "Ledge") //seeing if the raycast hit a grabable object
+				{
+					if(hit.transform.position.y <= (this.transform.position.y - 1))//Checking the player is at the correct height to grab
+					{
+						//Rotating the player to be facing the ledge
+						if((transform.eulerAngles.y <= 270 && transform.eulerAngles.y >= 90) && (hit.normal.x < 1 && hit.normal.x > -1))
+						{
+							vectorRotation = transform.rotation.eulerAngles;
+							vectorRotation.y = 180;
+							transform.rotation = Quaternion.Euler(vectorRotation);
+						}
+						else
+						{
+							vectorRotation = transform.rotation.eulerAngles;
+							vectorRotation.y = (90 * -(hit.normal.x));
+							transform.rotation = Quaternion.Euler(vectorRotation);
+						}
+
+						//Switching player state if all conditions are met
+						PSCurrentState = PlayerStates.PSLedge;
+						return;
+					}
+				}
+			}
+			
+			
+			
+			
+			
+			Gravity();
+			
+			return;
+			#endregion
+			
+			#region Climbing
+		case PlayerStates.PSClimbing: //Player is on a ladder
+			
+			CamControl();
+			
+			Climb(); //Function that controls up and down character movement on climb objects
+			
+			if(Input.GetKeyDown(keyCancel)) //Detaching the player from the climb object
+			{
+				collider.isTrigger = false;
+				rigidbody.constraints = RigidbodyConstraints.None;
+				rigidbody.freezeRotation = true;
+				rigidbody.AddForce(-transform.forward * fDismountForce);
+				PSCurrentState = PlayerStates.PSDropping;
+			}
+			
+			return;
+			#endregion
+			
+			#region Dismount
+		case PlayerStates.PSDismounting: //player is getting off a ledge/ladder
+			
+			fTimer -= Time.deltaTime;
+			
+			if(fTimer <= 0.0f) //Giving enough time for player lerp movement and animation
+			{
+				collider.isTrigger = false;
+				PSCurrentState = PlayerStates.PSGrounded;
+			}
+			
+			return;
+			#endregion
+			
+			#region Carrying
+			
+		case PlayerStates.PSCarrying: //player is carrying an object
+			
+			CamControl();
+			
+			fPlayerMove = (fSpeed * 0.7f); //Reducing players speed when carrying
+
+			POStateSet(POControl);
+			
+			Gravity();
+			
+			if (Input.GetKeyDown (keyInteract)) //Allowing player to throw carried object
+			{
+				Throw ();
+			}
+			
+			return;
+			
+			#endregion
+			
+			#region Carried
+		case PlayerStates.PSCarried: //player is being carried by the other player
+			
+			CamControl();
+			
+			rigidbody.isKinematic = true;
+			
+			collider.isTrigger = true;
+
+			//Moving and attaching player.
+			transform.parent = go_Carry.transform; 
+			
+			transform.position = go_Carry.transform.position;
+			
+			transform.rotation = go_Carry.transform.rotation;
+			
+			if(Input.GetKeyDown(keyJump)) //Allowing player to jump free of the other players hold
+			{
+				rigidbody.isKinematic = false;
+				
+				collider.isTrigger = false;
+				
+				transform.parent = null;
+				
+				PSCurrentState = PlayerStates.PSJumping;
+				
+				rigidbody.velocity = new Vector3(playerVecMove.x, CalculateJumpVerticalSpeed(), playerVecMove.z);
+				
+				//Switching carrying players state when jumping free
+				if(bPlayerOne == true)
+				{
+					go_OtherPlayer.GetComponent<Player>().PSCurrentState = PlayerStates.PSGrounded;
+				}
+				else
+				{
+					go_OtherPlayer.GetComponent<Player>().PSCurrentState = PlayerStates.PSGrounded;
+				}
+				
+			}
+			
+			return;
+			#endregion
+			
+			#region Ledge
+		case PlayerStates.PSLedge: //player has grabbed on a ledge
+			
+			animator.SetBool("bHanging", true); //animation
+			
+			rigidbody.constraints = RigidbodyConstraints.FreezePositionY; //Freezing players vertical movement
+			
+			collider.isTrigger = true;
+			
+			RaycastHit ledgeHit;
+			
+			if(bController == true) //Changing controls based on controller
+			{
+				fPlayerMove = Input.GetAxis (sControllerHori) * fSpeed;
+				
+				if(fPlayerMove > 0)
+				{
+					if(Physics.Raycast(transform.position, transform.right, out ledgeHit, 0.35F)) //Checking if player is up against a wall
+					{
+						rigidbody.velocity = Vector3.zero;
+					}
+					else
+					{
+						rigidbody.velocity = (transform.right * fClimbSpeed); //Applying force to the player if movement is possible
+					}
+				}
+				else if(fPlayerMove < 0)
+				{
+					if(Physics.Raycast(transform.position, -transform.right, out ledgeHit, 0.35F))
+					{
+						rigidbody.velocity = Vector3.zero;
+					}
+					else
+					{
+						rigidbody.velocity = (-transform.right * fClimbSpeed);
+					}
+				}
+				else
+				{
+					rigidbody.velocity = Vector3.zero; //Stopping player movement if no input is given
+				}
+				
+			}
+			else //Keyboard controls
+			{
+				if(Input.GetKey(keyRight))
+				{
+					if(Physics.Raycast(transform.position, transform.right, out ledgeHit, 0.35F))
+					{
+						rigidbody.velocity = Vector3.zero;
+					}
+					else
+					{
+						rigidbody.velocity = (transform.right * fClimbSpeed);
+					}
+				}
+				else if(Input.GetKey(keyLeft))
+				{
+					if(Physics.Raycast(transform.position, -transform.right, out ledgeHit, 0.35F))
+					{
+						rigidbody.velocity = Vector3.zero;
+					}
+					else
+					{
+						rigidbody.velocity = (-transform.right * fClimbSpeed);
+					}
+				}
+				else
+				{
+					rigidbody.velocity = Vector3.zero;
+				}
+			}
+			
+			if(Input.GetKeyDown(keyBack)) //Dismounting the player from the ledge.
+			{
+				collider.isTrigger = false;
+				rigidbody.constraints = RigidbodyConstraints.None;
+				rigidbody.freezeRotation = true;
+				rigidbody.AddForce(-transform.forward * fDismountForce);
+				PSCurrentState = PlayerStates.PSDropping;
+				
+				animator.SetBool("bHanging", false);
+			}
+			
+			if(Input.GetKeyDown(keyJump)) //Player climbs up the ledge
+			{
+				Dismount();
+			}
+			
+			if(Input.GetKeyDown(keyCancel)) //Another way for player to back off of ledge
+			{
+				collider.isTrigger = false;
+				rigidbody.constraints = RigidbodyConstraints.None;
+				rigidbody.freezeRotation = true;
+				rigidbody.AddForce(-transform.forward * fDismountForce);
+				animator.SetBool("bHanging", false);
+				PSCurrentState = PlayerStates.PSDropping;
+			}
+			
+			if(Physics.Raycast(transform.position, transform.forward, out hit, 1.5f))
+			{
+				//Player stays on ledge
+			}
+			else //Dismounting player if they move to far to left or right, and no ledge remains
+			{
+				collider.isTrigger = false;
+				rigidbody.constraints = RigidbodyConstraints.None;
+				rigidbody.freezeRotation = true;
+				rigidbody.AddForce(-transform.forward * fDismountForce);
+				animator.SetBool("bHanging", false);
+				PSCurrentState = PlayerStates.PSJumping;
+			}
+
+			//Getting a gameobject above the player
+			GameObject goCarry = go_OtherPlayer.GetComponent<Player>().go_Carry;
+
+			//Shooting out a ray cast checking there is an object above the player causing obstruction
+			if(Physics.Raycast(goCarry.transform.position, goCarry.transform.forward, out hit, 1.5f))
+			{
+				collider.isTrigger = false;
+				rigidbody.constraints = RigidbodyConstraints.None;
+				rigidbody.freezeRotation = true;
+				rigidbody.AddForce(-transform.forward * fDismountForce);
+				animator.SetBool("bHanging", false);
+				PSCurrentState = PlayerStates.PSJumping;
+			}
+			
+			return;
+			#endregion
+			
+			#region Teleporting
+		case PlayerStates.PSTeleporting: //player is teleporting to another location
+			
+			playerVecMove = Vector3.zero; //Stopping player movement
+			
+			fTeleportTime -= Time.deltaTime; //Teleport timer
+			
+			Gravity();
+			
+			if(bPlayer == true)
+			{
+				//Telling player where they're teleporting to.
+				go_TeleportText.GetComponent<TextMesh>().text = "Teleporting to Friend";
+				
+				if(Input.GetKeyDown(keyTeleport)) //Allowing player to change teleport destination
+				{
+					bHome = true;
+					bPlayer = false;
+				}
+				
+				if(fTeleportTime <= 0.0f) //Teleporting player when timer reaches zero
+				{
+					go_TeleportText.GetComponent<TextMesh>().text = "";
+					transform.position = go_OtherPlayer.transform.position; //Moving player to teleport position
+					PSCurrentState = PlayerStates.PSGrounded;
+				}
+				
+			}
+			else if(bHome == true)
+			{
+				go_TeleportText.GetComponent<TextMesh>().text = "Teleporting to Nest";
+				
+				if(Input.GetKeyDown(keyTeleport))
+				{
+					bHome = false;
+					bPlayer = true;
+				}
+				
+				if(fTeleportTime <= 0.0f)
+				{
+					go_TeleportText.GetComponent<TextMesh>().text = "";
+					transform.position = go_Home.transform.position;
+					PSCurrentState = PlayerStates.PSGrounded;
+				}
+			}
+			
+			if(Input.GetKeyDown(keyCancel)) //Allowing player to cancel teleport
+			{
+				go_TeleportText.GetComponent<TextMesh>().text = "";
+				PSCurrentState = PlayerStates.PSGrounded;
+			}
+			
+			return;
+			#endregion
+			
+			#region Thrown
+		case PlayerStates.PSThrown: //player has been thrown
+			
+			if(Physics.Raycast(transform.position, transform.forward, out hit, 1.5f))
+			{
+				
+				if(hit.transform.tag == "Ledge") //Checking if there is a ledge the player can grab
+				{
+					if(hit.transform.position.y <= (this.transform.position.y - 1))
+					{
+						if((transform.eulerAngles.y <= 270 && transform.eulerAngles.y >= 90) && (hit.normal.x < 1 && hit.normal.x > -1))
+						{
+							vectorRotation = transform.rotation.eulerAngles;
+							vectorRotation.y = 180;
+							transform.rotation = Quaternion.Euler(vectorRotation);
+						}
+						else
+						{
+							vectorRotation = transform.rotation.eulerAngles;
+							vectorRotation.y = (90 * -(hit.normal.x));
+							transform.rotation = Quaternion.Euler(vectorRotation);
+						}
+						
+						PSCurrentState = PlayerStates.PSLedge;
+						return;
+					}
+				}
+			}
+			
+			Gravity();
+			
+			CamControl();
+			
+			return;
+			#endregion
+			
+			#region Caught
+			
+		case PlayerStates.PSCaught: //player has been caught by an enemy
+			
+			if(bTagged == false) //Applying negative effect to player of being caught
+			{
+				//Taking away players items
+				go_Belt.GetComponent<PlayerBelt>().Clear();
+				
+				fTreasureCount = 0;
+				
+				fSpiceCount = 0;
+				fAppleCount = 0;
+				fGoldCount = 0;
+				fFishCount = 0;
+				
+				bHasBeenCaught = false;
+				
+				go_Capture.GetComponent<Capture>().Caught(this.gameObject);//Moving player to capture point
+			}
+			
+			Gravity();
+			
+			return;
+			
+			#endregion
+			
+			#region Treasure Carry
+			
+		case PlayerStates.PSTreaureCarry: //Player is carrying treasure
+			
+			bHasBeenCaught = true; //Player has been caught stealing, enemies will give chase
+			
+			CamControl();
+
+			POStateSet(POControl);
+
+			fPlayerMove = (fSpeed * 0.7f);
+
+
+			//Custom jump function for state
+			//Checking if player can jump
+			if (Physics.SphereCast (transform.position, fJumpSphereRad, Vector3.down, out hit, fJumpSphereDist))
+			{
+				bInAir = false;
+			}
+			//Player jumps
+			if(Input.GetKey(keyJump) && bInAir == false)
+			{
+				rigidbody.velocity = new Vector3 (playerVecMove.x, CalculateJumpVerticalSpeed (), playerVecMove.z);
+				
+				bInAir = true;
+			}
+			
+			Gravity();
+
+			//Player drops the loot.
+			if (Input.GetKeyDown (keyInteract)) 
+			{
+				go_BigItem.rigidbody.isKinematic = false;
+				
+				go_BigItem.transform.parent = null;
+				
+				go_BigItem.rigidbody.AddForce (transform.forward * 15);
+				go_BigItem.rigidbody.AddForce (transform.up * 2);
+				
+				PSCurrentState = PlayerStates.PSGrounded;
+			}
+			
+			return;
+			
+			#endregion
+			
+			#region Dropping
+			
+		case PlayerStates.PSDropping: //Player is dropping
+			
+			CamControl();
+			
+			PlayerAirControl(fAirSpeed);
+
+			GroundCheck();
+			
+			Gravity();
+			
+			return;
+			
+			#endregion
+		}
+	}
+}
